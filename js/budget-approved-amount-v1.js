@@ -10,7 +10,7 @@
   const PANEL_ID = 'molms-approved-budget-amount-v1';
   const money = value => 'TZS ' + Number(value || 0).toLocaleString('en-TZ', {maximumFractionDigits:2, minimumFractionDigits:0});
   const num = value => Number.isFinite(Number(value)) ? Number(value) : 0;
-  const norm = value => String(value || '').toLowerCase().replace(/[\\s_-]+/g, ' ').trim();
+  const norm = value => String(value || '').toLowerCase().replace(/[\s_-]+/g, ' ').trim();
   function getLines() {
     if (Array.isArray(window._bdLines)) return window._bdLines;
     try { if (typeof _bdLines !== 'undefined' && Array.isArray(_bdLines)) return _bdLines; } catch (_) {}
