@@ -71,8 +71,17 @@
     return rows.sort((a,b)=>b.revenue-a.revenue);
   }
 
+  function localToday(){
+    const d=new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+
+  // Receivables are a live balance, not a period-flow metric. Always reconcile
+  // against payments recorded through today, even when the dashboard is set to
+  // a prior reporting period; otherwise a payment made after that period-end is
+  // incorrectly shown as unpaid in the live receivables card.
   function allReceivables(){
-    const {end}=bounds(),{invoices,manual}=data(),rows=[];
+    const end=localToday(),{invoices,manual}=data(),rows=[];
     invoices.filter(i=>validTax(i)&&date(i.invoice_date)<=end).forEach(i=>{
       const total=num(i.total_due),paid=invoicePaidAsOf(i,end),outstanding=Math.max(0,total-paid);
       if(outstanding>.01)rows.push({kind:'invoice',id:i.id,client:i.client_name||'Unknown client',matter:i.matter_ref||i.matter_title||'General / Unlinked',source:i.invoice_number||'—',currency:i.currency||'TZS',revenue:total,paid,outstanding,status:paid>0?'Part Paid':'Unpaid'});
@@ -123,7 +132,7 @@
 
   function renderReceivables(){
     const host=q('fdReceivablesCardV1')||q('fdReceivablesCardV2');if(!host)return;const rows=allReceivables(),tot=totals(rows,'outstanding');
-    host.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:7px"><div><div style="font-size:11px;font-weight:800;color:var(--navy)">TOTAL CLIENT RECEIVABLES</div>${moneyLines(tot,false).map((l,i)=>`<div style="font-size:${i?'13px':'21px'};font-weight:900;color:#b45309;margin-top:2px">${esc(l.text)}</div>`).join('')}<div style="font-size:10px;color:var(--muted);margin-top:2px">All open recognised balances as at ${esc(bounds().end)}</div></div><div style="font-size:9px;color:var(--muted);text-align:right">${rows.length} source${rows.length===1?'':'s'} · historical position</div></div><div>${rows.map(r=>`<button data-v16-kind="${r.kind}" data-v16-id="${esc(r.id)}" style="width:100%;display:grid;grid-template-columns:minmax(110px,1fr) repeat(3,minmax(95px,.6fr));gap:9px;align-items:center;border:0;border-top:1px solid var(--border);padding:7px 2px;background:transparent;text-align:left;cursor:pointer;color:var(--navy)"><span style="font-size:11px;font-weight:800">${esc(r.client)}<small style="display:block;color:var(--muted);font-weight:400">${esc(r.source)}</small></span><span style="font-size:10px;text-align:right">Agreed<br><b>${money(r.currency,r.revenue)}</b></span><span style="font-size:10px;text-align:right;color:#16803c">Paid<br><b>${money(r.currency,r.paid)}</b></span><span style="font-size:10px;text-align:right;color:#b42318">Outstanding<br><b>${money(r.currency,r.outstanding)}</b></span></button>`).join('')||'<div style="font-size:11px;color:var(--muted);padding:7px 0">No open receivables as at this date.</div>'}</div>`;
+    host.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:7px"><div><div style="font-size:11px;font-weight:800;color:var(--navy)">TOTAL CLIENT RECEIVABLES</div>${moneyLines(tot,false).map((l,i)=>`<div style="font-size:${i?'13px':'21px'};font-weight:900;color:#b45309;margin-top:2px">${esc(l.text)}</div>`).join('')}<div style="font-size:10px;color:var(--muted);margin-top:2px">All open recognised balances as at ${esc(localToday())}</div></div><div style="font-size:9px;color:var(--muted);text-align:right">${rows.length} source${rows.length===1?'':'s'} · historical position</div></div><div>${rows.map(r=>`<button data-v16-kind="${r.kind}" data-v16-id="${esc(r.id)}" style="width:100%;display:grid;grid-template-columns:minmax(110px,1fr) repeat(3,minmax(95px,.6fr));gap:9px;align-items:center;border:0;border-top:1px solid var(--border);padding:7px 2px;background:transparent;text-align:left;cursor:pointer;color:var(--navy)"><span style="font-size:11px;font-weight:800">${esc(r.client)}<small style="display:block;color:var(--muted);font-weight:400">${esc(r.source)}</small></span><span style="font-size:10px;text-align:right">Agreed<br><b>${money(r.currency,r.revenue)}</b></span><span style="font-size:10px;text-align:right;color:#16803c">Paid<br><b>${money(r.currency,r.paid)}</b></span><span style="font-size:10px;text-align:right;color:#b42318">Outstanding<br><b>${money(r.currency,r.outstanding)}</b></span></button>`).join('')||'<div style="font-size:11px;color:var(--muted);padding:7px 0">No open receivables as at this date.</div>'}</div>`;
     host.onclick=e=>{const b=e.target.closest('[data-v16-kind]');if(b&&typeof fdOpenReceivableSourceV2==='function')fdOpenReceivableSourceV2(b.dataset.v16Kind,b.dataset.v16Id)};
   }
 
