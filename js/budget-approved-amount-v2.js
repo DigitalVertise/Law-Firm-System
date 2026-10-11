@@ -14,7 +14,7 @@ async function render(force){const actions=document.getElementById('bdPanelActio
 function draw(actions,t){if(!t)return;style();let card=document.getElementById(panelId);if(!card){card=document.createElement('section');card.id=panelId;actions.insertAdjacentElement('beforebegin',card)}card.innerHTML=[['APPROVED BUDGET TOTAL',t.approved,t.count+' line item(s) · approved only'],['REJECTED',t.rejected,'Excluded from approved total'],['ON HOLD',t.hold,'Excluded from approved total'],['ALL ITEMS',t.all,'Reference total only']].map((x,i)=>'<div class="ab-cell"><div class="ab-label">'+x[0]+'</div><div class="ab-value"'+(i===1?' style="color:#a52b25"':i===2?' style="color:#95620b"':'')+'>'+money(x[1])+'</div><div class="ab-note">'+x[2]+'</div></div>').join('');replaceHeadline(root(actions),t)}
 let queued=false;function schedule(){if(queued)return;queued=true;setTimeout(()=>{queued=false;render(false)},250)}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',schedule);else schedule();
-new MutationObserver(schedule).observe(document.body,{childList:true,subtree:true});
+new MutationObserver(ms=>{if(ms.some(m=>{const t=m.target;return !(t&&t.nodeType===1&&(t.id===panelId||(t.closest&&t.closest('#'+panelId))))}))schedule()}).observe(document.body,{childList:true,subtree:true});
 window.addEventListener('focus',()=>render(true));
 window.MOLMSApprovedBudgetAmountV2={refresh:()=>render(true)};
 })();
