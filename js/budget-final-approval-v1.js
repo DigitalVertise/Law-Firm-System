@@ -1,8 +1,8 @@
 /* MOLMS Budget Final Approval V6: visible diagnostics for failed approval. */
 (function () {
   'use strict';
-  if (window.__budgetFinalApprovalV6) return;
-  window.__budgetFinalApprovalV6 = true;
+  if (window.__budgetFinalApprovalV7) return;
+  window.__budgetFinalApprovalV7 = true;
 
   function activeId() {
     var panel = document.getElementById('bdPanelActions');
