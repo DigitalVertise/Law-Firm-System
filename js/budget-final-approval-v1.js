@@ -1,8 +1,8 @@
-/* MOLMS Budget Final Approval V5: stable approval control and explicit persistence verification. */
+/* MOLMS Budget Final Approval V6: visible diagnostics for failed approval. */
 (function () {
   'use strict';
-  if (window.__budgetFinalApprovalV5) return;
-  window.__budgetFinalApprovalV5 = true;
+  if (window.__budgetFinalApprovalV6) return;
+  window.__budgetFinalApprovalV6 = true;
 
   function activeId() {
     var panel = document.getElementById('bdPanelActions');
@@ -18,9 +18,8 @@
     return String(window.authRole || (typeof authRole !== 'undefined' ? authRole : '')).toLowerCase() === 'partner';
   }
   function notify(text, type) {
-    if (typeof window.notice === 'function') window.notice(text, type);
-    else if (typeof notice === 'function') notice(text, type);
-    else window.alert(text);
+    // Always surface the result: the app's notice/toast can be hidden behind the iframe/modal.
+    window.alert(String(text));
   }
   async function approve(id) {
     try {
@@ -33,6 +32,7 @@
       var client = (typeof sb !== 'undefined' && sb) || window.sb;
       if (!client || !client.from) throw new Error('Budget database connection is unavailable.');
       if (!window.confirm('Approve this budget document? Line decisions will remain unchanged.')) return;
+      console.info('[Budget approval V6] Confirmed approval', { docId: docId, role: (window.authRole || (typeof authRole !== 'undefined' ? authRole : '')), approvedLines: lines().filter(function (line) { return String(line.status || '').toLowerCase() === 'approved'; }).length });
       var payload = { status: 'approved', updated_at: new Date().toISOString() };
       var user = window.authUser || (typeof authUser !== 'undefined' ? authUser : null);
       if (user && user.id) payload.updated_by = user.id;
@@ -54,7 +54,7 @@
       if (typeof bdOpenDocument === 'function') await bdOpenDocument(docId);
       notify('Approved: database status verified.');
     } catch (e) {
-      console.error('[Budget approval V5]', e);
+      console.error('[Budget approval V6]', e);
       notify('Budget approval failed: ' + (e && e.message ? e.message : String(e)), 'err');
     }
   }
