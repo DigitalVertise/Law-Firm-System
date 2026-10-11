@@ -39,7 +39,9 @@
     var docId = activeId();
     if (!button || !docId) return;
     if (button.dataset.bdStatusDoc === String(docId) &&
-        (button.dataset.bdStatusState === 'approved' || button.dataset.bdStatusState === 'not-approved' || button.dataset.bdStatusState === 'checking')) return;
+        (button.dataset.bdStatusState === 'approved' || button.dataset.bdStatusState === 'checking')) return;
+    if (button.dataset.bdStatusDoc === String(docId) && button.dataset.bdStatusState === 'not-approved' &&
+        Date.now() - Number(button.dataset.bdStatusCheckedAt || 0) < 5000) return;
     button.dataset.bdStatusDoc = String(docId);
     button.dataset.bdStatusState = 'checking';
     button.disabled = true;
@@ -59,6 +61,7 @@
         button.removeAttribute('aria-disabled');
         button.classList.remove('bd-finalize-locked');
         button.dataset.bdStatusState = 'not-approved';
+        button.dataset.bdStatusCheckedAt = String(Date.now());
       }
     } catch (error) {
       console.warn('[Budget approval] Could not pre-check status; approval handler will verify before writing.', error);
