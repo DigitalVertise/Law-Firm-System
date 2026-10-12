@@ -12,7 +12,7 @@
   const money = v => 'TZS ' + n(v).toLocaleString('en-TZ', {maximumFractionDigits:2});
   const dateLabel = v => v ? new Date(v).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—';
   const client = () => (typeof sb !== 'undefined' && sb) || window.sb || window.supabaseClient || null;
-  let busy = false, registers = [], entries = [], currentUser = null, currentRole = '', selectedId = '', confirmAction = '';
+  let busy = false, initializing = false, registers = [], entries = [], currentUser = null, currentRole = '', selectedId = '', confirmAction = '';
 
   function style() {
     if (document.getElementById(PANEL_ID + '-style')) return;
@@ -112,7 +112,7 @@
     const found=findAnchor(); if(!found)return;
     style();
     let panel=document.getElementById(PANEL_ID);
-    if(!panel){panel=document.createElement('section');panel.id=PANEL_ID;found.anchor.insertAdjacentElement('afterend',panel);}
+    if(!panel){panel=document.createElement('section');panel.id=PANEL_ID;} if(panel.parentElement !== found.anchor.parentElement || panel.previousElementSibling !== found.anchor) found.anchor.insertAdjacentElement('afterend',panel);
     const r=registers.find(x=>x.id===selectedId);
     if(!r){
       panel.innerHTML='<div class="em-head"><div><h3 class="em-title">Monthly Expenditure Close & Review</h3><div class="em-sub">Submit the completed monthly register to a partner, lock entries, and retain a review history.</div></div></div><div class="em-note">No expenditure registers are visible to your account. Create or open a monthly register first.</div>';
@@ -262,9 +262,9 @@
     try{await loadRegisters(db);render()}catch(e){console.error('[MOLMS month-end workflow]',e);const p=document.getElementById(PANEL_ID);if(p)p.innerHTML='<h3 class="em-title">Monthly Expenditure Close & Review</h3><div class="em-error">Could not load expenditure registers: '+esc(e.message||e)+'</div>';}
   }
   async function init(){
-    const db=client();if(!db)return;
-    await userContext(db);
-    await reloadAndRender();
+    if(initializing)return; initializing=true;
+    try { const db=client();if(!db)return; await userContext(db); await reloadAndRender(); }
+    finally { initializing=false; }
   }
   let queued=false;
   function schedule(){if(queued)return;queued=true;setTimeout(()=>{queued=false;if(!document.getElementById(PANEL_ID))init();else render()},220);}
