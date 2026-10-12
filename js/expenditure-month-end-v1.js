@@ -189,7 +189,8 @@
 
   async function notifyPartners(db,r,action,comment){
     try{
-      const users=await db.from('roles').select('user_id,full_name').eq('role','partner').eq('active',true);
+      const targetRole = action==='submitted' ? 'partner' : 'office_manager';
+      const users=await db.from('roles').select('user_id,full_name').eq('role',targetRole).eq('active',true);
       if(users.error)throw users.error;
       const recipients=(users.data||[]).filter(x=>x.user_id && x.user_id!==currentUser.id);
       if(!recipients.length)return;
