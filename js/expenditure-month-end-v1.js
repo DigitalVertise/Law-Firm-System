@@ -267,7 +267,7 @@
     finally { initializing=false; }
   }
   let queued=false;
-  function schedule(){if(queued)return;queued=true;setTimeout(()=>{queued=false;if(!document.getElementById(PANEL_ID))init();else render()},220);}
+  function schedule(){if(queued)return;queued=true;setTimeout(()=>{queued=false;const panel=document.getElementById(PANEL_ID);if(!panel){init();return}const found=findAnchor();if(found&&(panel.parentElement!==found.anchor.parentElement||panel.previousElementSibling!==found.anchor))render()},220);}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',schedule);else schedule();
   const observer=new MutationObserver(schedule);observer.observe(document.body,{childList:true,subtree:true});
   window.addEventListener('focus',schedule);
