@@ -96,17 +96,21 @@
   function totals(rows,key){const out={TZS:0};rows.forEach(r=>add(out,r.currency,r[key]));return out}
 
   function periodExpenses(){
-    const {start,end}=bounds(),{entries,payroll,office,historical,manual}=data(),out={TZS:0};
-    entries.filter(e=>date(e.date)>=start&&date(e.date)<=end&&String(e.status||'').toLowerCase()!=='cancelled').forEach(e=>add(out,'TZS',e.amount));
-    payroll.filter(p=>date((p.payroll_month||'')+'-01')>=start&&date((p.payroll_month||'')+'-01')<=end&&String(p.status||'').toLowerCase()!=='cancelled').forEach(p=>add(out,'TZS',p.total_net));
-    office.filter(e=>date(e.expense_date)>=start&&date(e.expense_date)<=end).forEach(e=>add(out,'TZS',e.amount));
-    historical.filter(h=>date((h.period_month||'')+'-01')>=start&&date((h.period_month||'')+'-01')<=end).forEach(h=>add(out,'TZS',h.amount));
-    manual.filter(t=>approved(t)&&t.tx_type==='expenditure'&&date(t.date)>=start&&date(t.date)<=end).forEach(t=>add(out,t.currency,t.amount));
+    const {start,end}=bounds(),{manual}=data(),out={TZS:0};
+    manual.filter(t=>approved(t)&&t.tx_type==='expenditure'&&date(t.date)>=start&&date(t.date)<=end)
+      .forEach(t=>add(out,t.currency,t.amount));
     return out;
   }
 
   function cashPosition(){
-    try{return fdCashContinuity()}catch(e){return {openingByCur:{TZS:0},closingByCur:{TZS:0}}}
+    const {start,end}=bounds(),{invoices,manual}=data(),movement={TZS:0};
+    invoices.filter(validTax).forEach(i=>receipts(i).filter(r=>r.date>=start&&r.date<=end).forEach(r=>add(movement,i.currency,num(r.cash))));
+    manual.filter(t=>approved(t)&&date(t.date)>=start&&date(t.date)<=end).forEach(t=>{
+      const type=String(t.tx_type||'').toLowerCase();
+      if(type==='revenue')add(movement,t.currency,num(t.amount));
+      else if(type==='expenditure'||type==='drawing')add(movement,t.currency,-num(t.amount));
+    });
+    return {openingByCur:{},closingByCur:movement,movementByCur:movement};
   }
 
   function metrics(){
@@ -120,44 +124,27 @@
 
   function renderKpis(){
     const host=q('fdKpiRow');if(!host)return;const m=metrics(),label=typeof fdPeriodLabel==='function'?fdPeriodLabel():'Selected period';
+    host.style.display='grid';host.style.gridTemplateColumns='repeat(auto-fit,minmax(165px,1fr))';host.style.gap='10px';
     host.innerHTML=[
-      card('RECOGNISED REVENUE',m.revenue,'#16a34a',`Full agreed/invoiced fees · ${label}`),
-      card('OPERATING EXPENSES',m.expenses,'#dc2626',`Recorded expenses · ${label}`),
-      card('PERIOD RESULT',Object.fromEntries(Object.keys({...m.revenue,...m.expenses}).map(c=>[c,num(m.revenue[c])-num(m.expenses[c])])),'#16a34a',label),
-      card('PAYMENTS RECEIVED',m.collected,'#065f46',`Actual settlements · ${label}`),
-      card('NEW RECEIVABLES',m.newReceivables,'#d97706',`Unpaid recognised fees · ${label}`),
-      card('CASH AVAILABLE',m.cash.closingByCur||{TZS:0},num(m.cash.closingByCur?.TZS)>=0?'#16a34a':'#dc2626',`Exact ${money('TZS',m.cash.closingByCur?.TZS)} · as at ${bounds().end}`)
+      card('RECOGNISED REVENUE',m.revenue,'#15803d',`Invoices + approved manual revenue · ${label}`),
+      card('PAYMENTS RECEIVED',m.collected,'#1d4ed8',`Invoice integration + manual revenue · ${label}`),
+      card('NEW RECEIVABLES',m.newReceivables,'#b45309',`Unpaid fees · ${label}`),
+      card('MANUAL EXPENDITURE',m.expenses,'#b91c1c',`Posted manual expenditure only · ${label}`),
+      card('NET RECORDED CASH MOVEMENT',m.cash.movementByCur||{},'#1d4ed8',`Receipts less manual payments · ${bounds().start} to ${bounds().end}; not a bank balance`)
     ].join('');
   }
 
   function renderReceivables(){
     const host=q('fdReceivablesCardV1')||q('fdReceivablesCardV2');if(!host)return;const rows=allReceivables(),tot=totals(rows,'outstanding');
-    host.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:7px"><div><div style="font-size:11px;font-weight:800;color:var(--navy)">TOTAL CLIENT RECEIVABLES</div>${moneyLines(tot,false).map((l,i)=>`<div style="font-size:${i?'13px':'21px'};font-weight:900;color:#b45309;margin-top:2px">${esc(l.text)}</div>`).join('')}<div style="font-size:10px;color:var(--muted);margin-top:2px">All open recognised balances as at ${esc(localToday())}</div></div><div style="font-size:9px;color:var(--muted);text-align:right">${rows.length} source${rows.length===1?'':'s'} · live position</div></div><div>${rows.map(r=>`<button data-v16-kind="${r.kind}" data-v16-id="${esc(r.id)}" style="width:100%;display:grid;grid-template-columns:minmax(110px,1fr) repeat(3,minmax(95px,.6fr));gap:9px;align-items:center;border:0;border-top:1px solid var(--border);padding:7px 2px;background:transparent;text-align:left;cursor:pointer;color:var(--navy)"><span style="font-size:11px;font-weight:800">${esc(r.client)}<small style="display:block;color:var(--muted);font-weight:400">${esc(r.source)}</small></span><span style="font-size:10px;text-align:right">Agreed<br><b>${money(r.currency,r.revenue)}</b></span><span style="font-size:10px;text-align:right;color:#16803c">Paid<br><b>${money(r.currency,r.paid)}</b></span><span style="font-size:10px;text-align:right;color:#b42318">Outstanding<br><b>${money(r.currency,r.outstanding)}</b></span></button>`).join('')||'<div style="font-size:11px;color:var(--muted);padding:7px 0">No open receivables as at this date.</div>'}</div>`;
+    host.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:8px"><div><div style="font-size:11px;font-weight:800;color:var(--navy)">CLIENTS WITH OUTSTANDING FEES</div>${moneyLines(tot,false).map((l,i)=>`<div style="font-size:${i?'13px':'21px'};font-weight:900;color:#b45309;margin-top:2px">${esc(l.text)}</div>`).join('')}<div style="font-size:10px;color:var(--muted);margin-top:2px">Live balance as at ${esc(localToday())}</div></div><div style="font-size:9px;color:var(--muted);text-align:right">${rows.length} open</div></div><div>${rows.slice(0,6).map(r=>`<button data-v16-kind="${r.kind}" data-v16-id="${esc(r.id)}" style="width:100%;display:flex;justify-content:space-between;gap:10px;align-items:center;border:0;border-top:1px solid var(--border);padding:8px 2px;background:transparent;text-align:left;cursor:pointer;color:var(--navy)"><span style="font-size:11px;font-weight:700">${esc(r.client)}<small style="display:block;color:var(--muted);font-weight:400">${esc(r.source)}</small></span><b style="font-size:11px;color:#b42318;white-space:nowrap">${money(r.currency,r.outstanding)}</b></button>`).join('')||'<div style="font-size:11px;color:var(--muted);padding:7px 0">No outstanding client fees.</div>'}</div>`;
     host.onclick=e=>{const b=e.target.closest('[data-v16-kind]');if(b&&typeof fdOpenReceivableSourceV2==='function')fdOpenReceivableSourceV2(b.dataset.v16Kind,b.dataset.v16Id)};
   }
 
-  function renderRevenueAnalytics(){
-    const rows=periodClientRows(),tax=rows.filter(r=>r.kind==='invoice'),manual=rows.filter(r=>r.kind==='manual'),tzs=rows.filter(r=>r.currency==='TZS'),tzsTotal=tzs.reduce((s,r)=>s+r.revenue,0);
-    const bar=(name,value)=>`<div><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span>${esc(name)}</span><b>TZS ${short(value)} <small style="color:var(--muted);font-weight:400">(${tzsTotal?Math.round(value/tzsTotal*100):0}%)</small></b></div><div style="height:4px;background:#e5e7eb;border-radius:8px"><div style="height:100%;width:${tzsTotal?Math.round(value/tzsTotal*100):0}%;background:#1e40af;border-radius:8px"></div></div></div>`;
-    const type=q('fdRevByType');if(type){const taxV=tax.filter(r=>r.currency==='TZS').reduce((s,r)=>s+r.revenue,0),manualV=manual.filter(r=>r.currency==='TZS').reduce((s,r)=>s+r.revenue,0),usd=rows.filter(r=>r.currency==='USD').reduce((s,r)=>s+r.revenue,0);type.innerHTML=bar('Tax Invoice',taxV)+bar('Agreed Client Fees',manualV)+(usd?`<div style="border-top:1px dashed var(--border);padding-top:6px">USD revenue shown separately <b style="float:right">USD ${usd.toLocaleString()}</b></div>`:'')}
-    const clients=q('fdRevByClient');if(clients){const grouped={};tzs.forEach(r=>grouped[r.client]=(grouped[r.client]||0)+r.revenue);clients.innerHTML=Object.entries(grouped).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([n,v],i)=>`<div style="display:flex;gap:6px"><b style="color:var(--muted)">${i+1}.</b><span style="flex:1">${esc(n)}</span><b style="color:#16803c">TZS ${short(v)}</b></div>`).join('')}
-    const practice=q('fdRevByPractice');if(practice){const linked=tax.filter(r=>r.currency==='TZS'&&/^LIT:|^NL:/.test(r.matter)).reduce((s,r)=>s+r.revenue,0),general=tzsTotal-linked;practice.innerHTML=(linked?bar('Matter-linked',linked):'')+(general?bar('General / Unlinked',general):'')}
-    const partner=q('fdRevByPartner');if(partner)partner.innerHTML='<div style="font-size:11px;color:var(--muted)">Partner attribution is shown only where the source is linked to a matter. Unlinked fees are not guessed.</div>';
-  }
+  function renderRevenueAnalytics(){ }
 
-  function renderCollectionHealth(){
-    const host=q('fdClientMatterRevenueV2');if(!host)return;const rows=periodClientRows(),rev=totals(rows,'revenue'),paid=totals(rows,'paid'),due=totals(rows,'outstanding'),ratio=num(rev.TZS)?Math.round(num(paid.TZS)/num(rev.TZS)*100):0;
-    const open=rows.filter(r=>r.outstanding>.01),clients=new Set(open.map(r=>`${r.client}|${r.currency}`)).size;
-    host.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start"><div><div style="font-size:12px;font-weight:900;color:var(--navy)">COLLECTION HEALTH</div><div style="font-size:9px;color:var(--muted);margin-top:2px">How effectively recognised fees are being collected</div></div><div style="font-size:24px;font-weight:900;color:${ratio>=80?'#16803c':ratio>=60?'#b45309':'#b42318'}">${ratio}%</div></div><div style="height:7px;background:#e5e7eb;border-radius:8px;margin:10px 0"><div style="height:100%;width:${ratio}%;background:${ratio>=80?'#16803c':ratio>=60?'#d97706':'#b42318'};border-radius:8px"></div></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:10px;margin-bottom:8px"><div>Recognised<br><b>${money('TZS',rev.TZS)}</b></div><div>Collected<br><b style="color:#16803c">${money('TZS',paid.TZS)}</b></div><div>Outstanding<br><b style="color:#b42318">${money('TZS',due.TZS)}</b></div></div><div style="font-size:9px;color:var(--muted);margin-bottom:5px">${clients} client${clients===1?'':'s'} with open selected-period balances${num(due.USD)?` · USD ${num(due.USD).toLocaleString()} also outstanding`:''}</div>${open.map(r=>`<button data-v16-kind="${r.kind}" data-v16-id="${esc(r.id)}" style="width:100%;display:grid;grid-template-columns:1fr repeat(3,minmax(74px,.55fr));gap:7px;border:0;border-top:1px solid var(--border);background:transparent;padding:7px 0;text-align:left;cursor:pointer;font-size:10px"><b>${esc(r.client)}</b><span style="text-align:right">Agreed<br><b>${money(r.currency,r.revenue)}</b></span><span style="text-align:right;color:#16803c">Paid<br><b>${money(r.currency,r.paid)}</b></span><span style="text-align:right;color:#b42318">Due<br><b>${money(r.currency,r.outstanding)}</b></span></button>`).join('')}`;
-    host.onclick=e=>{const b=e.target.closest('[data-v16-kind]');if(b&&typeof fdOpenReceivableSourceV2==='function')fdOpenReceivableSourceV2(b.dataset.v16Kind,b.dataset.v16Id)};
-  }
+  function renderCollectionHealth(){ }
 
-  function renderAttention(){
-    const host=q('fdAlerts');if(!host)return;const {invoices}=data(),{start,end}=bounds(),rows=[];
-    invoices.filter(i=>date(i.invoice_date)>=start&&date(i.invoice_date)<=end).forEach(i=>{const type=String(i.invoice_type||'').toLowerCase(),st=String(i.status||'').toLowerCase();if(type==='proforma'&&st==='issued')rows.push({client:i.client_name,amount:num(i.total_due),currency:i.currency||'TZS',label:'Proforma awaiting agreement'});else if(validTax(i)){const due=Math.max(0,num(i.total_due)-invoicePaidAsOf(i,end));if(due>.01)rows.push({client:i.client_name,amount:due,currency:i.currency||'TZS',label:'Collection required'})}});
-    periodClientRows().filter(r=>r.kind==='manual'&&r.outstanding>.01).forEach(r=>rows.push({client:r.client,amount:r.outstanding,currency:r.currency,label:'Part payment outstanding'}));
-    host.innerHTML=`<div style="font-size:11px;font-weight:800;color:${rows.length?'#b45309':'#16803c'}">${rows.length} item${rows.length===1?'':'s'} require follow-up</div>${rows.slice(0,4).map(r=>`<div style="display:flex;justify-content:space-between;gap:8px;border-top:1px solid var(--border);padding-top:6px"><span style="font-size:10px"><b>${esc(r.client||'Unknown client')}</b><br><small style="color:var(--muted)">${esc(r.label)}</small></span><b style="font-size:10px;color:#b42318">${money(r.currency,r.amount)}</b></div>`).join('')}<div style="font-size:9px;color:var(--muted);margin-top:5px">Open “View All” for totals, payments, balances and source records.</div>`;
-  }
+  function renderAttention(){ }
 
   function vatRecognitionDate(i){
     const firstReceipt=receipts(i)
@@ -184,39 +171,24 @@
     return {payable,pipeline,taxInvoiceCount,proformaCount};
   }
 
-  function renderObligations(){
-    const host=q('fdMonthlyObligationsStableV6')||q('fdMonthlyObligations');if(!host)return;let o;try{o=fdMonthlyObligations()}catch(e){return}if(o.payrollGenerated)return;
-    const month=new Date(o.month+'-01T00:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'}),vat=vatPosition(),vatLines=moneyLines(vat.payable,false),pipelineLines=moneyLines(vat.pipeline,false).filter(x=>x.value>0);
-    const pendingRow=label=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:4px 0;font-size:12px"><span style="color:var(--muted)">${label}</span><span style="font-weight:700;color:#92400e">Pending payroll</span></div>`;
-    host.innerHTML=`<div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px;margin:0">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:2px">
-        <div style="font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--muted)">MONTHLY OBLIGATIONS</div>
-        <span style="font-size:10px;font-weight:700;color:#92400e;background:#fef3c7;padding:2px 8px;border-radius:10px;white-space:nowrap">Payroll not generated</span>
-      </div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${esc(month)}</div>
-      <div style="font-size:18px;font-weight:900;color:var(--navy);margin-bottom:2px">${vatLines.map(x=>esc(x.text)).join(' · ')}</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Confirmed invoice VAT · payroll obligations pending</div>
-      <div style="border-top:1px solid var(--border);padding-top:6px">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 8px;margin:0 -8px 4px;background:#f6f8fb;border-radius:8px;font-size:12px"><span style="font-weight:800;color:var(--navy)">Net Salaries</span><span style="font-weight:800;color:#92400e">Pending payroll</span></div>
-        ${['PAYE','NSSF','Health Insurance','SDL','WCF'].map(pendingRow).join('')}
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0 4px;margin-top:4px;border-top:1px solid var(--border);font-size:12px"><span style="font-weight:800;color:var(--navy)">VAT on Tax Invoices</span><span style="font-weight:900;color:#1e40af">${vatLines.map(x=>esc(x.text)).join(' · ')}</span></div>
-        <div style="font-size:9px;color:var(--muted);text-align:right">${vat.taxInvoiceCount} VAT-bearing tax invoice${vat.taxInvoiceCount===1?'':'s'} recognised in this period</div>
-        ${pipelineLines.length?`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0 3px;margin-top:5px;border-top:1px dashed var(--border);font-size:11px"><span style="color:var(--muted)">Proforma VAT — not yet payable</span><span style="font-weight:700;color:#64748b">${pipelineLines.map(x=>esc(x.text)).join(' · ')}</span></div><div style="font-size:9px;color:var(--muted)">Moves to invoice VAT automatically when payment converts the proforma to a tax invoice.</div>`:''}
-      </div>
-    </div>`;
-  }
+  function renderObligations(){ }
 
   function renderStatus(){
-    const m=metrics(),ratio=num(m.revenue.TZS)?num(m.collected.TZS)/num(m.revenue.TZS):0,cash=num(m.cash.closingByCur?.TZS),payrollPending=!(()=>{try{return fdMonthlyObligations().payrollGenerated}catch(e){return false}})();
-    let level='Healthy',color='#16a34a';if(cash<0){level='Critical';color='#dc2626'}else if(ratio<.8||payrollPending){level='Stable';color='#b45309'}
-    const text=q('fdStatusText');if(text)text.textContent=`Financial Status: ${level} · ${typeof fdPeriodLabel==='function'?fdPeriodLabel():'Selected period'}`;
-    const box=q('fdStatusIndicator');if(box){box.style.color=color;box.style.background=level==='Healthy'?'#f0fdf4':level==='Critical'?'#fef2f2':'#fffbeb'}
-    const intel=q('fdIntelligence');if(intel)intel.innerHTML=`<b>${level}:</b> ${Math.round(ratio*100)}% of TZS recognised revenue collected. Cash available is <b>${money('TZS',cash)}</b>.${payrollPending?' September payroll obligations are pending calculation.':''}`;
+    const text=q('fdStatusText');if(text)text.textContent=`Financial Dashboard · ${typeof fdPeriodLabel==='function'?fdPeriodLabel():'Selected period'}`;
+    const box=q('fdStatusIndicator');if(box){box.style.color='#1d4ed8';box.style.background='#eff6ff'}
+    const intel=q('fdIntelligence');if(intel)intel.textContent='Revenue and receivables retain invoice integration. Expense totals use posted manual transactions only. Cash is net recorded movement, not a verified bank balance.';
   }
 
   function render(){
     if(rendering)return;rendering=true;
-    try{renderKpis();renderReceivables();renderRevenueAnalytics();renderCollectionHealth();renderAttention();renderObligations();renderStatus()}finally{rendering=false}
+    try{
+      renderKpis();renderReceivables();renderRevenueAnalytics();renderCollectionHealth();renderAttention();renderObligations();renderStatus();
+      ['fdRevByType','fdRevByClient','fdRevByPractice','fdRevByPartner','fdClientMatterRevenueV2','fdAlerts','fdMonthlyObligationsStableV6','fdMonthlyObligations'].forEach(id=>{
+        const el=q(id);if(!el)return;let node=el;
+        for(let i=0;i<4&&node.parentElement;i++){const p=node.parentElement;if(p.tagName==='SECTION'||/card|panel|widget/i.test(String(p.className||''))){node=p;break}node=p}
+        node.style.display='none';
+      });
+    }finally{rendering=false}
   }
 
   async function loadPayments(){
