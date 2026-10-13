@@ -13,9 +13,10 @@
   function period(){try{return fdGetPeriodDates()}catch(_){const x=new Date(),p=v=>String(v).padStart(2,'0');return {start:x.getFullYear()+'-'+p(x.getMonth()+1)+'-01',end:x.getFullYear()+'-'+p(x.getMonth()+1)+'-'+p(x.getDate())}}}
   function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
   function status(t){return String(t?.status||(t?.is_approved?'approved':'pending')).toLowerCase()}
+  function rowsOf(name,fallback){try{const x=typeof _fdAllManual!=='undefined'&&name==='manual'?_fdAllManual:name==='invoices'&&typeof _fdAllInvoices!=='undefined'?_fdAllInvoices:name==='entries'&&typeof _fdAllEntries!=='undefined'?_fdAllEntries:name==='payroll'&&typeof _fdAllPayroll!=='undefined'?_fdAllPayroll:name==='office'&&typeof _fdAllOfficeExpenses!=='undefined'?_fdAllOfficeExpenses:name==='historical'&&typeof _fdAllHistPayroll!=='undefined'?_fdAllHistPayroll:[];return Array.isArray(x)?x:(fallback||[])}catch(_){return fallback||[]}}
   function renderManual(){
     const tbody=document.getElementById('fdManualBody');if(!tbody)return;
-    const {start,end}=period(),all=Array.isArray(window._fdAllManual)?window._fdAllManual:(Array.isArray(window._fdManualTx)?window._fdManualTx:[]);
+    const {start,end}=period(),all=rowsOf('manual',typeof _fdManualTx!=='undefined'?_fdManualTx:[]);
     const mode=document.getElementById('fdPeriod')?.value||'month';
     const rows=all.filter(t=>mode==='all'||(d(t.date)>=start&&d(t.date)<=end)).slice().sort((a,b)=>d(b.date).localeCompare(d(a.date))||String(b.created_at||'').localeCompare(String(a.created_at||'')));
     if(!rows.length){tbody.innerHTML='<tr><td colspan="10" style="padding:12px;text-align:center;color:var(--muted)">No manual transactions recorded for '+esc(typeof fdPeriodLabel==='function'?fdPeriodLabel():'the selected period')+'. Historical transactions remain saved.</td></tr>';return}
@@ -48,14 +49,14 @@
   function cashThrough(end){
     const inflow={},outflow={},invoices=Array.isArray(window._fdAllInvoices)?window._fdAllInvoices:[];
     invoices.flatMap(invoiceCashRows).filter(r=>r.date&&r.date<=end).forEach(r=>add(inflow,r.currency,r.amount));
-    (Array.isArray(window._fdAllManual)?window._fdAllManual:[]).filter(t=>approved(t)&&d(t.date)&&d(t.date)<=end).forEach(t=>{if(t.tx_type==='revenue'||t.tx_type==='loan')add(inflow,t.currency,t.amount);if(t.tx_type==='expenditure'||t.tx_type==='drawing')add(outflow,t.currency,t.amount)});
-    (Array.isArray(window._fdAllEntries)?window._fdAllEntries:[]).filter(e=>d(e.date)&&d(e.date)<=end&&status(e)!=='cancelled').forEach(e=>add(outflow,'TZS',e.amount));
-    const payroll=Array.isArray(window._fdAllPayroll)?window._fdAllPayroll:[],precedence={locked:3,approved:2,submitted:1,draft:0,rejected:-1},byMonth={};
+    rowsOf('manual').filter(t=>approved(t)&&d(t.date)&&d(t.date)<=end).forEach(t=>{if(t.tx_type==='revenue'||t.tx_type==='loan')add(inflow,t.currency,t.amount);if(t.tx_type==='expenditure'||t.tx_type==='drawing')add(outflow,t.currency,t.amount)});
+    rowsOf('entries').filter(e=>d(e.date)&&d(e.date)<=end&&status(e)!=='cancelled').forEach(e=>add(outflow,'TZS',e.amount));
+    const payroll=rowsOf('payroll'),precedence={locked:3,approved:2,submitted:1,draft:0,rejected:-1},byMonth={};
     payroll.forEach(r=>{const m=r.payroll_month||String(r.created_at||'').slice(0,7);if(!m)return;const old=byMonth[m];if(!old||(precedence[r.status]??-1)>(precedence[old.status]??-1)||((precedence[r.status]??-1)===(precedence[old.status]??-1)&&new Date(r.created_at||0)>new Date(old.created_at||0)))byMonth[m]=r});
     Object.values(byMonth).filter(r=>(r.payroll_month?r.payroll_month+'-01':d(r.created_at))<=end&&String(r.status||'').toLowerCase()!=='cancelled').forEach(r=>add(outflow,'TZS',n(r.net_pay||r.total_net||r.gross_pay||r.amount||r.total_amount)));
-    (Array.isArray(window._fdAllOfficeExpenses)?window._fdAllOfficeExpenses:[]).filter(e=>d(e.expense_date)&&d(e.expense_date)<=end&&!e.archived_at).forEach(e=>add(outflow,'TZS',e.amount));
+    rowsOf('office').filter(e=>d(e.expense_date)&&d(e.expense_date)<=end&&!e.archived_at).forEach(e=>add(outflow,'TZS',e.amount));
     const nativeMonths=new Set(Object.values(byMonth).map(r=>r.payroll_month).filter(Boolean));
-    (Array.isArray(window._fdAllHistPayroll)?window._fdAllHistPayroll:[]).filter(h=>!h.archived_at&&!nativeMonths.has(h.period_month)&&(String(h.period_month||'')+'-01')<=end).forEach(h=>add(outflow,'TZS',h.amount));
+    rowsOf('historical').filter(h=>!h.archived_at&&!nativeMonths.has(h.period_month)&&(String(h.period_month||'')+'-01')<=end).forEach(h=>add(outflow,'TZS',h.amount));
     const result={};new Set([...Object.keys(inflow),...Object.keys(outflow),'TZS']).forEach(c=>result[c]=(inflow[c]||0)-(outflow[c]||0));return allCurrencies(result);
   }
   window.fdCashContinuity=function(){
@@ -68,6 +69,6 @@
   const baseRefresh=window.fdRefresh;
   if(typeof baseRefresh==='function'&&!baseRefresh.__molmsFinanceReconciliationV1){const wrapped=async function(){const result=await baseRefresh.apply(this,arguments);await loadPayments();repaint();return result};wrapped.__molmsFinanceReconciliationV1=true;window.fdRefresh=wrapped}
   window.addEventListener('load',async()=>{await loadPayments();repaint()});
-  let lastKey='';setInterval(()=>{if(!document.getElementById('page-findash'))return;const {start,end}=period(),key=[start,end,(window._fdAllManual||[]).length,(window._fdAllInvoices||[]).length,(window._fdAllEntries||[]).length,paymentLedger.length].join('|');if(key!==lastKey){lastKey=key;repaint()}},1500);
-  window.MOLMSFinanceReconciliationV1={refresh:async()=>{await loadPayments();repaint()},audit:()=>({period:period(),paymentLedgerRows:paymentLedger.length,paymentLedgerReady,closingCash:window.fdCashContinuity().closingByCur,manualRowsVisible:document.querySelectorAll('#fdManualBody tr').length})};
+  let lastKey='';setInterval(()=>{if(!document.getElementById('page-findash'))return;const {start,end}=period(),key=[start,end,rowsOf('manual').length,rowsOf('invoices').length,rowsOf('entries').length,paymentLedger.length].join('|');if(key!==lastKey){lastKey=key;repaint()}},1500);
+  window.MOLMSFinanceReconciliationV1={refresh:async()=>{await loadPayments();repaint()},audit:()=>({period:period(),paymentLedgerRows:paymentLedger.length,paymentLedgerReady,closingCash:window.fdCashContinuity().closingByCur,manualRowsVisible:document.querySelectorAll('#fdManualBody tr').length,manualLoaded:rowsOf('manual').length,invoicesLoaded:rowsOf('invoices').length})};
 })();
