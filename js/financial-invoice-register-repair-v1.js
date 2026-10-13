@@ -1,7 +1,7 @@
 /* MOLMS Receivables + Invoice Register V4 — persistent placement */
 (function(){
 'use strict';
-window.MOLMSInvoiceRegisterRepairV1={version:4,loaded:false};
+if(window.MOLMSInvoiceRegisterRepairV1&&window.MOLMSInvoiceRegisterRepairV1.version>=5)return;window.MOLMSInvoiceRegisterRepairV1={version:5,loaded:false};
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm=v=>String(v||'').trim().toLowerCase();
 const money=(v,c)=>((c||'TZS')==='USD'?'USD ':'TZS ')+Number(v||0).toLocaleString('en-US',{maximumFractionDigits:2});
@@ -28,14 +28,14 @@ async function render(){
  const p=getPeriod(),scroll=getScroll();if(!p||!scroll)return;
  let reg=ensure('molms-invoice-register-v1','display:block;visibility:visible;opacity:1;width:auto;box-sizing:border-box;margin:12px 20px 18px;background:#fff;border:1px solid #e3d8ca;border-radius:14px;padding:16px;overflow:auto;position:relative;z-index:1');
  if(!reg.isConnected||!getScroll().contains(reg))placeRegister(reg);
- if(typeof sb==='undefined'||!sb){reg.innerHTML='<b>Invoice Register</b><p style="color:#b91c1c">Financial data connection unavailable.</p>';return;}
+ const db=(typeof sb!=='undefined'&&sb)||window.sb||window.supabaseClient||null;if(!db||typeof db.from!=='function'){reg.innerHTML='<b>Invoice Register</b><p style="color:#b91c1c">Financial data connection unavailable (database client not exposed to dashboard scripts).</p>';return;}
  reg.innerHTML='<b>Invoice Register · '+esc(p.label)+'</b><p style="color:#667085">Loading invoice records…</p>';
  try{
-  const q=await sb.from('invoices').select('id,invoice_number,client_name,matter_ref,matter_title,currency,invoice_date,due_date,total_due,amount_paid,withholding_tax_amount,status,invoice_type,voided_at').eq('invoice_type','tax').lte('invoice_date',p.end).order('invoice_date',{ascending:false});
+  const q=await db.from('invoices').select('id,invoice_number,client_name,matter_ref,matter_title,currency,invoice_date,due_date,total_due,amount_paid,withholding_tax_amount,status,invoice_type,voided_at').eq('invoice_type','tax').lte('invoice_date',p.end).order('invoice_date',{ascending:false});
   if(q.error)throw q.error;
   const all=(q.data||[]).filter(r=>!r.voided_at&&!['draft','void','cancelled','superseded'].includes(norm(r.status)));
   const ids=all.map(r=>r.id);let payments=[];
-  for(let i=0;i<ids.length;i+=100){const z=await sb.from('invoice_payments').select('invoice_id,payment_date,cash_amount,withholding_tax_amount').in('invoice_id',ids.slice(i,i+100)).lte('payment_date',p.end);if(z.error)throw z.error;payments.push(...(z.data||[]));}
+  for(let i=0;i<ids.length;i+=100){const z=await db.from('invoice_payments').select('invoice_id,payment_date,cash_amount,withholding_tax_amount').in('invoice_id',ids.slice(i,i+100)).lte('payment_date',p.end);if(z.error)throw z.error;payments.push(...(z.data||[]));}
   const ledger={};payments.forEach(x=>{let t=ledger[x.invoice_id]||(ledger[x.invoice_id]={cash:0,wht:0});t.cash+=Number(x.cash_amount||0);t.wht+=Number(x.withholding_tax_amount||0);});
   all.forEach(r=>{let t=ledger[r.id];r.paid=t?t.cash:Number(r.amount_paid||0);r.wht=t?t.wht:Number(r.withholding_tax_amount||0);r.outstanding=Math.max(0,Number(r.total_due||0)-r.paid-r.wht);r.state=r.outstanding<=0?'Fully Paid':r.paid+r.wht>0?'Partially Paid':'Unpaid';});
   const open=all.filter(r=>r.outstanding>0).sort((a,b)=>String(a.invoice_date).localeCompare(String(b.invoice_date)));
@@ -49,7 +49,7 @@ async function render(){
  }catch(e){console.error('[MOLMS receivables V3]',e);reg.innerHTML='<b>Invoice Register</b><p style="color:#b91c1c">Could not load invoice records: '+esc(e.message||e)+'</p>';}
 }
 let busy=false,last='';async function run(){if(busy)return;busy=true;try{await render();let p=getPeriod();last=p&&p.start+'|'+p.end||'';}finally{busy=false;}}
-function start(){setTimeout(run,500);const p=document.getElementById('page-findash');if(p&&!window.MOLMSInvoiceRegisterRepairV1.observer){const ob=new MutationObserver(()=>{const reg=document.getElementById('molms-invoice-register-v1');if(!reg||!reg.isConnected||!getScroll()?.contains(reg)){if(!busy)run();}});ob.observe(p,{childList:true,subtree:true});window.MOLMSInvoiceRegisterRepairV1.observer=ob;}}
+function start(){setTimeout(run,500);if(!window.MOLMSInvoiceRegisterRepairV1.observer){const ob=new MutationObserver(()=>{const p=document.getElementById('page-findash');if(p&&p.offsetParent!==null){const reg=document.getElementById('molms-invoice-register-v1');if(!reg||!reg.isConnected||!getScroll()?.contains(reg)){if(!busy)run();}}});ob.observe(document.body,{childList:true,subtree:true});window.MOLMSInvoiceRegisterRepairV1.observer=ob;}}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
 window.addEventListener('load',start);
 setInterval(()=>{let p=getPeriod(),k=p&&p.start+'|'+p.end||'';if(k&&k!==last)run();},2000);
