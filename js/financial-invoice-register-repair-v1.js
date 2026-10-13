@@ -49,7 +49,7 @@ async function render(){
  }catch(e){console.error('[MOLMS receivables V3]',e);reg.innerHTML='<b>Invoice Register</b><p style="color:#b91c1c">Could not load invoice records: '+esc(e.message||e)+'</p>';}
 }
 let busy=false,last='';async function run(){if(busy)return;busy=true;try{await render();let p=getPeriod();last=p&&p.start+'|'+p.end||'';}finally{busy=false;}}
-function start(){setTimeout(run,500);}
+function start(){setTimeout(run,500);const p=document.getElementById('page-findash');if(p&&!window.MOLMSInvoiceRegisterRepairV1.observer){const ob=new MutationObserver(()=>{const reg=document.getElementById('molms-invoice-register-v1');if(!reg||!reg.isConnected||!getScroll()?.contains(reg)){if(!busy)run();}});ob.observe(p,{childList:true,subtree:true});window.MOLMSInvoiceRegisterRepairV1.observer=ob;}}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
 window.addEventListener('load',start);
 setInterval(()=>{let p=getPeriod(),k=p&&p.start+'|'+p.end||'';if(k&&k!==last)run();},2000);
