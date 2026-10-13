@@ -1,7 +1,7 @@
-/* MOLMS Receivables + Invoice Register V3 — robust placement and cross-month balance */
+/* MOLMS Receivables + Invoice Register V4 — persistent placement */
 (function(){
 'use strict';
-window.MOLMSInvoiceRegisterRepairV1={version:3,loaded:false};
+window.MOLMSInvoiceRegisterRepairV1={version:4,loaded:false};
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm=v=>String(v||'').trim().toLowerCase();
 const money=(v,c)=>((c||'TZS')==='USD'?'USD ':'TZS ')+Number(v||0).toLocaleString('en-US',{maximumFractionDigits:2});
@@ -16,7 +16,7 @@ function periodOf(y,mo,current){let start=y+'-'+String(mo).padStart(2,'0')+'-01'
 function getScroll(){let p=document.getElementById('page-findash');return p&&([...p.children].find(x=>/overflow-y:\s*auto/i.test(x.getAttribute('style')||''))||p);}
 function getCard(){let p=document.getElementById('page-findash');if(!p)return null;return [...p.querySelectorAll('div,section,article')].filter(e=>e.children.length<8&&norm(e.textContent).includes('total client receivables')&&norm(e.textContent).length<500).sort((a,b)=>a.textContent.length-b.textContent.length)[0]||null;}
 function ensure(id,style){let p=document.getElementById('page-findash'),el=p&&p.querySelector('#'+id);if(el)return el;el=document.createElement('section');el.id=id;el.style.cssText=style;return el;}
-function placeRegister(h){const p=document.getElementById('page-findash');if(!p)return;const scroll=getScroll();const quick=p.querySelector('.fd-simple-quick-actions');const priority=p.querySelector('#fdPriorityRowV7');const anchor=quick||priority;if(anchor&&anchor.parentElement){anchor.insertAdjacentElement('afterend',h);}else scroll.insertBefore(h,scroll.children[2]||null);}
+function placeRegister(h){const scroll=getScroll();if(!scroll)return;scroll.appendChild(h);h.style.display='block';h.style.visibility='visible';h.style.opacity='1';}
 function paintReceivables(rows,asof){
  const card=getCard();if(!card)return;
  const sums={};rows.forEach(r=>{let c=r.currency||'TZS';sums[c]=(sums[c]||0)+r.outstanding;});
@@ -26,8 +26,8 @@ function paintReceivables(rows,asof){
 }
 async function render(){
  const p=getPeriod(),scroll=getScroll();if(!p||!scroll)return;
- let reg=ensure('molms-invoice-register-v1','display:block;margin:12px 20px 18px;background:#fff;border:1px solid #e3d8ca;border-radius:14px;padding:16px;overflow:auto');
- if(!reg.isConnected)placeRegister(reg);
+ let reg=ensure('molms-invoice-register-v1','display:block;visibility:visible;opacity:1;width:auto;box-sizing:border-box;margin:12px 20px 18px;background:#fff;border:1px solid #e3d8ca;border-radius:14px;padding:16px;overflow:auto;position:relative;z-index:1');
+ if(!reg.isConnected||!getScroll().contains(reg))placeRegister(reg);
  if(typeof sb==='undefined'||!sb){reg.innerHTML='<b>Invoice Register</b><p style="color:#b91c1c">Financial data connection unavailable.</p>';return;}
  reg.innerHTML='<b>Invoice Register · '+esc(p.label)+'</b><p style="color:#667085">Loading invoice records…</p>';
  try{
