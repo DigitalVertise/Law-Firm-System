@@ -1,0 +1,21 @@
+name: Financial Dashboard Regression
+on:
+  push:
+    branches:
+      - financial-dashboard-perfection-from-2026-10-11
+      - finance-dashboard-production-candidate-2026-10-14
+    paths:
+      - 'js/financial-dashboard-v16.js'
+      - 'tests/financial-dashboard-v16.test.js'
+      - '.github/workflows/financial-dashboard-regression.yml'
+  workflow_dispatch:
+jobs:
+  dashboard-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run Financial Dashboard V16 regression
+        run: node tests/financial-dashboard-v16.test.js

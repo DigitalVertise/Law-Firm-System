@@ -12,13 +12,14 @@
   const add=(o,c,v)=>{c=c||'TZS';o[c]=(o[c]||0)+num(v);return o;};
   const approved=t=>String(t?.status||(t?.is_approved?'approved':'pending')).toLowerCase()==='approved';
   const money=(c,v)=>`${c||'TZS'} ${num(v).toLocaleString()}`;
-  const short=n=>{n=num(n);return Math.abs(n)>=1e9?(n/1e9).toFixed(1).replace('.0','')+'B':Math.abs(n)>=1e6?(n/1e6).toFixed(1).replace('.0','')+'M':Math.abs(n)>=1e3?(n/1e3).toFixed(1).replace('.0','')+'K':n.toLocaleString();};
+  const short=n=>{n=num(n);return Math.abs(n)>=1e9?(n/1e9).toFixed(1).replace('.0','')+'B':Math.abs(n)>=1e6?(n/1e6).toFixed(1).replace('.0','')+'M':Math.abs(n)>=1e3?(n/1e3).toFixed(1).replace('.0','')+'K':n.toLocaleString()};
   const moneyLines=(byCur,compact=true)=>{
     const ordered=['TZS',...Object.keys(byCur||{}).filter(c=>c!=='TZS').sort()];
     return [...new Set(ordered)].filter(c=>c==='TZS'||num(byCur[c])!==0).map(c=>({currency:c,value:num(byCur[c]),text:`${c} ${compact?short(byCur[c]):num(byCur[c]).toLocaleString()}`}));
   };
 
   let paymentRows=[];
+  let paymentLedgerLoadError=false;
   let rendering=false;
 
   function data(){
@@ -41,47 +42,53 @@
     return String(i.invoice_type||'tax').toLowerCase()==='tax'&&!['draft','void','cancelled','superseded'].includes(st);
   }
 
+  // Payment dates and amounts come only from Invoice Module ledger rows.
+  // Notes and updated_at are not payment evidence and must never be used as fallback.
   function receipts(i){
-    const ledger=paymentRows.filter(p=>p.invoice_id===i.id).map(p=>({date:date(p.payment_date),cash:num(p.cash_amount),wht:num(p.withholding_tax_amount)}));
-    const ledgerCash=ledger.reduce((s,r)=>s+r.cash,0),ledgerWht=ledger.reduce((s,r)=>s+r.wht,0);
+    return paymentRows.filter(p=>p.invoice_id===i.id).map(p=>({
+      date:date(p.payment_date),cash:num(p.cash_amount),wht:num(p.withholding_tax_amount),
+      estimated:p.payment_date_is_estimated===true,
+      origin:String(p.entry_origin||'')
+    }));
+  }
+
+  function paymentIntegrity(i){
+    const rows=receipts(i),cash=rows.reduce((s,r)=>s+r.cash,0),wht=rows.reduce((s,r)=>s+r.wht,0);
     const storedCash=Math.max(0,num(i.amount_paid)),storedWht=Math.max(0,num(i.withholding_tax_amount));
-    if(ledger.length&&Math.abs(ledgerCash-storedCash)<.01&&Math.abs(ledgerWht-storedWht)<.01)return ledger;
-    const parsed=[];let m;
-    const re=/\[Payment\s+(\d{4}-\d{2}-\d{2})\]\s+Cash\s+([\d,]+(?:\.\d+)?)(?:\s+\+\s+WHT\s+([\d,]+(?:\.\d+)?))?/gi;
-    while((m=re.exec(String(i.notes||'')))!==null)parsed.push({date:m[1],cash:num(m[2].replace(/,/g,'')),wht:num((m[3]||'0').replace(/,/g,''))});
-    const parsedCash=parsed.reduce((s,r)=>s+r.cash,0),parsedWht=parsed.reduce((s,r)=>s+r.wht,0);
-    if(parsed.length&&Math.abs(parsedCash-storedCash)<.01&&Math.abs(parsedWht-storedWht)<.01)return parsed;
-    if(storedCash||storedWht)return [{date:date(i.updated_at||i.invoice_date),cash:storedCash,wht:storedWht,legacy:true}];
-    return [];
+    return {
+      missing:!rows.length&&(storedCash>.01||storedWht>.01),
+      mismatch:Math.abs(cash-storedCash)>.01||Math.abs(wht-storedWht)>.01,
+      estimated:rows.some(r=>r.estimated),
+      ledgerRows:rows.length,
+      cash,wht,
+      needsReconciliation:(!rows.length&&(storedCash>.01||storedWht>.01))||
+        Math.abs(cash-storedCash)>.01||Math.abs(wht-storedWht)>.01||rows.some(r=>r.estimated)
+    };
   }
 
-  function invoiceTotals(i,end=localToday()){
-    const total=Math.max(0,num(i.total_due));
-    const paid=receipts(i).filter(r=>!r.date||r.date<=end).reduce((s,r)=>s+r.cash+r.wht,0);
-    const outstanding=Math.max(0,total-paid);
-    const status=outstanding<=.01?'Fully Paid':paid>.01?'Partially Paid':'Unpaid';
-    return {total,paid,outstanding,status};
+  function invoicePaidAsOf(i,end){
+    return receipts(i).filter(r=>!r.estimated&&r.date&&r.date<=end).reduce((s,r)=>s+r.cash+r.wht,0);
   }
 
-  function invoiceRegisterRows(){
-    const {invoices}=data(),end=localToday();
-    return invoices.filter(i=>{
-      const type=String(i.invoice_type||'tax').toLowerCase(),st=String(i.status||'').toLowerCase();
-      return !['draft','void','cancelled','superseded'].includes(st)&&
-        (type==='tax'||(type==='proforma'&&st==='issued'));
-    }).map(i=>{
-      const t=invoiceTotals(i,end),type=String(i.invoice_type||'tax').toLowerCase();
-      return {id:i.id,number:i.invoice_number||'—',client:i.client_name||'Unknown client',date:date(i.invoice_date),due:date(i.due_date),currency:i.currency||'TZS',type,sourceStatus:i.status,total:t.total,paid:t.paid,outstanding:type==='proforma'?t.total:t.outstanding,status:type==='proforma'?'Proforma':t.status};
-    }).sort((a,b)=>b.date.localeCompare(a.date)||a.client.localeCompare(b.client));
+  // Period receivables are balances, not cash-flow evidence. Include recorded
+  // settlements dated on/before period end even if the date is estimated;
+  // the reconciliation warning remains visible and cash-flow cards still
+  // exclude estimated-date rows until their dates are verified.
+  function invoiceSettledAsOf(i,end){
+    return receipts(i).filter(r=>r.date&&r.date<=end).reduce((s,r)=>s+r.cash+r.wht,0);
   }
 
-  function invoicePaidAsOf(i,end){return receipts(i).filter(r=>r.date<=end).reduce((s,r)=>s+r.cash+r.wht,0)}
+  // Current open balances use the recorded settlement amount even when its
+  // date is estimated; the date remains flagged and is excluded from period flows.
+  function invoicePaidTotal(i){
+    return receipts(i).reduce((s,r)=>s+r.cash+r.wht,0);
+  }
 
   function periodClientRows(){
     const {start,end}=bounds(),{invoices,manual}=data(),rows=[];
     invoices.filter(i=>validTax(i)&&date(i.invoice_date)>=start&&date(i.invoice_date)<=end).forEach(i=>{
-      const revenue=num(i.total_due),paid=invoicePaidAsOf(i,end),outstanding=Math.max(0,revenue-paid);
-      rows.push({kind:'invoice',id:i.id,client:i.client_name||'Unknown client',matter:i.matter_ref||i.matter_title||'General / Unlinked',source:i.invoice_number||'—',currency:i.currency||'TZS',revenue,paid,outstanding,status:outstanding<=.01?'Paid':paid>0?'Part Paid':'Unpaid'});
+      const revenue=num(i.total_due),paid=invoiceSettledAsOf(i,end),outstanding=Math.max(0,revenue-paid);
+      rows.push({kind:'invoice',id:i.id,client:i.client_name||'Unknown client',matter:i.matter_ref||i.matter_title||'General / Unlinked',source:i.invoice_number||'—',currency:i.currency||'TZS',revenue,paid,outstanding,status:paymentIntegrity(i).needsReconciliation?'Needs Reconciliation':outstanding<=.01?'Paid':paid>0?'Part Paid':'Unpaid'});
     });
     manual.filter(t=>approved(t)&&t.tx_type==='revenue'&&date(t.date)>=start&&date(t.date)<=end).forEach(t=>{
       const paid=num(t.amount),revenue=t.client_receivable&&num(t.agreed_amount)>0?num(t.agreed_amount):paid;
@@ -96,11 +103,20 @@
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   }
 
+  // Receivables are a live balance, not a period-flow metric. Always reconcile
+  // against payments recorded through today, even when the dashboard is set to
+  // a prior reporting period. Issued proformas are shown here as open client
+  // commitments, but remain excluded from recognised revenue and period KPIs.
   function allReceivables(){
     const end=localToday(),{invoices,manual}=data(),rows=[];
-    invoices.filter(i=>validTax(i)&&date(i.invoice_date)<=end).forEach(i=>{
-      const t=invoiceTotals(i,end);
-      if(t.outstanding>.01)rows.push({kind:'invoice',id:i.id,client:i.client_name||'Unknown client',matter:i.matter_ref||i.matter_title||'General / Unlinked',source:i.invoice_number||'—',currency:i.currency||'TZS',revenue:t.total,paid:t.paid,outstanding:t.outstanding,status:t.paid>0?'Part Paid':'Unpaid'});
+    invoices.filter(i=>{
+      const type=String(i.invoice_type||'tax').toLowerCase(),status=String(i.status||'').toLowerCase();
+      const activeTax=validTax(i);
+      const issuedProforma=type==='proforma'&&status==='issued';
+      return (activeTax||issuedProforma)&&date(i.invoice_date)<=end;
+    }).forEach(i=>{
+      const total=num(i.total_due),paid=invoicePaidTotal(i),outstanding=Math.max(0,total-paid);
+      if(outstanding>.01)rows.push({kind:'invoice',id:i.id,client:i.client_name||'Unknown client',matter:i.matter_ref||i.matter_title||'General / Unlinked',source:i.invoice_number||'—',currency:i.currency||'TZS',revenue:total,paid,outstanding,status:String(i.invoice_type||'').toLowerCase()==='proforma'?'Proforma Outstanding':paymentIntegrity(i).needsReconciliation?'Needs Reconciliation':paid>0?'Part Paid':'Unpaid'});
     });
     manual.filter(t=>approved(t)&&t.client_receivable&&date(t.date)<=end).forEach(t=>{
       const outstanding=Math.max(0,num(t.outstanding_amount));if(outstanding<=.01)return;
@@ -111,20 +127,66 @@
 
   function totals(rows,key){const out={TZS:0};rows.forEach(r=>add(out,r.currency,r[key]));return out}
 
-  function periodExpenses(){
-    const {start,end}=bounds(),{entries,payroll,office,historical,manual}=data(),out={TZS:0};
-    entries.filter(e=>date(e.date)>=start&&date(e.date)<=end&&String(e.status||'').toLowerCase()!=='cancelled').forEach(e=>add(out,'TZS',e.amount));
-    payroll.filter(p=>date((p.payroll_month||'')+'-01')>=start&&date((p.payroll_month||'')+'-01')<=end&&String(p.status||'').toLowerCase()!=='cancelled').forEach(p=>add(out,'TZS',p.total_net));
-    office.filter(e=>date(e.expense_date)>=start&&date(e.expense_date)<=end).forEach(e=>add(out,'TZS',e.amount));
-    historical.filter(h=>date((h.period_month||'')+'-01')>=start&&date((h.period_month||'')+'-01')<=end).forEach(h=>add(out,'TZS',h.amount));
-    manual.filter(t=>approved(t)&&t.tx_type==='expenditure'&&date(t.date)>=start&&date(t.date)<=end).forEach(t=>add(out,t.currency,t.amount));
+  // Cash collections use verified, non-estimated cash payment events only.
+  // WHT is tracked separately as invoice settlement, never as cash received.
+  // Manual client-fee/receivable entries are not counted here: they have no
+  // invoice-payment link and could duplicate an Invoice Module receipt.
+  function periodCollections(){
+    const {start,end}=bounds(),{invoices,manual}=data(),out={TZS:0};
+    invoices.filter(validTax).forEach(i=>{
+      receipts(i).filter(r=>!r.estimated&&r.date>=start&&r.date<=end).forEach(r=>add(out,i.currency,r.cash));
+    });
+    // Only explicitly standalone manual revenue is eligible; manual client
+    // receivable rows are excluded because they have no invoice-payment link.
+    manual.filter(t=>approved(t)&&String(t.tx_type||'').toLowerCase()==='revenue'&&!t.client_receivable&&date(t.date)>=start&&date(t.date)<=end&&String(t.status||'').toLowerCase()!=='cancelled')
+      .forEach(t=>add(out,t.currency,t.amount));
     return out;
   }
 
-  function cashPosition(){try{return fdCashContinuity()}catch(e){return {openingByCur:{TZS:0},closingByCur:{TZS:0}}}}
+  function periodWithholdingTax(){
+    const {start,end}=bounds(),{invoices}=data(),out={TZS:0};
+    invoices.filter(validTax).forEach(i=>{
+      receipts(i).filter(r=>!r.estimated&&r.date>=start&&r.date<=end).forEach(r=>add(out,i.currency,r.wht));
+    });
+    return out;
+  }
+
+  function reconciliationIssues(){
+    const {invoices}=data();
+    return invoices.filter(validTax).map(i=>({invoice:i,integrity:paymentIntegrity(i)}))
+      .filter(x=>x.integrity.needsReconciliation);
+  }
+
+  // Actual expenditure is sourced ONLY from approved manual financial
+  // transactions. Expense Register, Office Expenses, payroll calculations,
+  // historical payroll summaries and budgets are operational/obligation data;
+  // importing them here would count unpaid items as cash already spent.
+  function periodExpenses(){
+    const {start,end}=bounds(),{manual}=data(),out={TZS:0};
+    manual.filter(t=>approved(t)&&String(t.tx_type||'').toLowerCase()==='expenditure'&&date(t.date)>=start&&date(t.date)<=end&&String(t.status||'').toLowerCase()!=='cancelled').forEach(t=>add(out,t.currency,t.amount));
+    return out;
+  }
+
+  function cashPosition(){
+    const {start,end}=bounds(),{manual}=data();
+    const previous=new Date(start+'T00:00:00');previous.setDate(previous.getDate()-1);
+    const prior=previous.getFullYear()+'-'+String(previous.getMonth()+1).padStart(2,'0')+'-'+String(previous.getDate()).padStart(2,'0');
+    const through=limit=>{
+      const totals={TZS:0};
+      data().invoices.filter(validTax).forEach(i=>receipts(i).filter(r=>!r.estimated&&r.date&&r.date<=limit).forEach(r=>add(totals,i.currency,r.cash)));
+      manual.filter(t=>approved(t)&&date(t.date)&&date(t.date)<=limit&&String(t.status||'').toLowerCase()!=='cancelled').forEach(t=>{
+        const type=String(t.tx_type||'').toLowerCase();
+        if(type==='revenue'&&!t.client_receivable)add(totals,t.currency,t.amount);
+        if(type==='loan')add(totals,t.currency,t.amount);
+        if(type==='expenditure'||type==='drawing')add(totals,t.currency,-num(t.amount));
+      });
+      return totals;
+    };
+    return {openingByCur:through(prior),closingByCur:through(end),start,end,openingBalanceConfigured:false};
+  }
 
   function metrics(){
-    const rows=periodClientRows(),revenue=totals(rows,'revenue'),collected=totals(rows,'paid'),newReceivables=totals(rows,'outstanding'),expenses=periodExpenses(),cash=cashPosition();
+    const rows=periodClientRows(),revenue=totals(rows,'revenue'),collected=periodCollections(),newReceivables=totals(rows,'outstanding'),expenses=periodExpenses(),cash=cashPosition();
     return {rows,revenue,collected,newReceivables,expenses,cash,totalReceivables:totals(allReceivables(),'outstanding')};
   }
 
@@ -138,9 +200,9 @@
       card('RECOGNISED REVENUE',m.revenue,'#16a34a',`Full agreed/invoiced fees · ${label}`),
       card('OPERATING EXPENSES',m.expenses,'#dc2626',`Recorded expenses · ${label}`),
       card('PERIOD RESULT',Object.fromEntries(Object.keys({...m.revenue,...m.expenses}).map(c=>[c,num(m.revenue[c])-num(m.expenses[c])])),'#16a34a',label),
-      card('PAYMENTS RECEIVED',m.collected,'#065f46',`Actual settlements · ${label}`),
+      card('CASH RECEIVED',m.collected,'#065f46',`Verified cash only · WHT settlement separately tracked: ${moneyLines(periodWithholdingTax()).map(x=>x.text).join(', ')||'0'} · ${label}`),
       card('NEW RECEIVABLES',m.newReceivables,'#d97706',`Unpaid recognised fees · ${label}`),
-      card('CASH AVAILABLE',m.cash.closingByCur||{TZS:0},num(m.cash.closingByCur?.TZS)>=0?'#16a34a':'#dc2626',`Exact ${money('TZS',m.cash.closingByCur?.TZS)} · as at ${bounds().end}`)
+      card('CASH AVAILABLE*',m.cash.closingByCur||{TZS:0},num(m.cash.closingByCur?.TZS)>=0?'#16a34a':'#dc2626',`Net verified cash movements; opening balance not configured · as at ${bounds().end}`)
     ].join('');
   }
 
@@ -160,23 +222,10 @@
   }
 
   function renderCollectionHealth(){
-    const host=q('fdClientMatterRevenueV2');if(!host)return;
-    const rows=invoiceRegisterRows(),taxRows=rows.filter(r=>r.type==='tax'),open=taxRows.filter(r=>r.outstanding>.01),paid=taxRows.filter(r=>r.status==='Fully Paid');
-    const totalsByCur={};taxRows.forEach(r=>add(totalsByCur,r.currency,r.total));
-    const paidByCur={};taxRows.forEach(r=>add(paidByCur,r.currency,r.paid));
-    const dueByCur={};taxRows.forEach(r=>add(dueByCur,r.currency,r.outstanding));
-    const badge=(s)=>{const c=s==='Fully Paid'?'#ecfdf3':s==='Partially Paid'?'#fffaeb':s==='Unpaid'?'#fef3f2':'#f2f4f7',t=s==='Fully Paid'?'#067647':s==='Partially Paid'?'#b54708':s==='Unpaid'?'#b42318':'#475467';return `<span style="display:inline-block;border-radius:999px;padding:3px 7px;background:${c};color:${t};font-size:10px;font-weight:800;white-space:nowrap">${esc(s)}</span>`};
-    const summary=(label,obj,color)=>`<div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:0"><div style="font-size:9px;color:var(--muted);font-weight:800">${label}</div>${moneyLines(obj,false).map(x=>`<div style="font-size:12px;font-weight:900;color:${color};margin-top:3px">${esc(x.text)}</div>`).join('')}</div>`;
-    host.innerHTML=`<div style="font-size:12px;font-weight:900;color:var(--navy)">INVOICE PAYMENT REGISTER</div>
-      <div style="font-size:10px;color:var(--muted);margin:3px 0 10px">Live status from tax invoices and individual settlements. Withholding tax counts toward settlement but not cash received.</div>
-      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-bottom:10px">
-        ${summary('INVOICED',totalsByCur,'#182230')}${summary('SETTLED',paidByCur,'#16803c')}${summary('OUTSTANDING',dueByCur,'#b42318')}
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;font-size:10px;color:var(--muted);margin-bottom:8px"><span>${taxRows.length} active tax invoices</span><span>·</span><span>${paid.length} fully paid</span><span>·</span><span>${taxRows.filter(r=>r.status==='Partially Paid').length} partially paid</span><span>·</span><span>${taxRows.filter(r=>r.status==='Unpaid').length} unpaid</span><span>·</span><span>${open.length} with balance</span></div>
-      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:760px;font-size:11px"><thead><tr style="text-align:left;background:#f8fafc;color:#475467"><th style="padding:8px 6px">Invoice / Client</th><th style="padding:8px 6px">Invoice date</th><th style="padding:8px 6px">Due date</th><th style="padding:8px 6px;text-align:right">Invoice total</th><th style="padding:8px 6px;text-align:right">Paid incl. WHT</th><th style="padding:8px 6px;text-align:right">Outstanding</th><th style="padding:8px 6px">Status</th></tr></thead><tbody>
-      ${rows.map(r=>`<tr style="border-top:1px solid var(--border);background:${r.type==='proforma'?'#fafafa':'#fff'}"><td style="padding:8px 6px"><b>${esc(r.number)}</b><div style="color:var(--muted);font-size:10px;margin-top:2px">${esc(r.client)} ${r.type==='proforma'?'· Proforma':''}</div></td><td style="padding:8px 6px;white-space:nowrap">${esc(r.date||'—')}</td><td style="padding:8px 6px;white-space:nowrap">${esc(r.due||'—')}</td><td style="padding:8px 6px;text-align:right;white-space:nowrap">${money(r.currency,r.total)}</td><td style="padding:8px 6px;text-align:right;white-space:nowrap;color:#16803c">${money(r.currency,r.paid)}</td><td style="padding:8px 6px;text-align:right;white-space:nowrap;color:${r.outstanding>.01?'#b42318':'#667085'}">${money(r.currency,r.outstanding)}</td><td style="padding:8px 6px">${badge(r.status)}</td></tr>`).join('')||'<tr><td colspan="7" style="padding:12px;color:var(--muted)">No active invoices found.</td></tr>'}
-      </tbody></table></div>
-      <div style="font-size:9px;color:var(--muted);margin-top:7px">Currencies are kept separate. Proformas are shown as pipeline and are excluded from tax-invoice totals and receivables. Click a row in the receivables card above to open its source record.</div>`;
+    const host=q('fdClientMatterRevenueV2');if(!host)return;const rows=periodClientRows(),rev=totals(rows,'revenue'),paid=totals(rows,'paid'),due=totals(rows,'outstanding'),ratio=num(rev.TZS)?Math.round(num(paid.TZS)/num(rev.TZS)*100):0;
+    const open=rows.filter(r=>r.outstanding>.01),clients=new Set(open.map(r=>`${r.client}|${r.currency}`)).size;
+    host.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start"><div><div style="font-size:12px;font-weight:900;color:var(--navy)">COLLECTION HEALTH</div><div style="font-size:9px;color:var(--muted);margin-top:2px">How effectively recognised fees are being collected</div></div><div style="font-size:24px;font-weight:900;color:${ratio>=80?'#16803c':ratio>=60?'#b45309':'#b42318'}">${ratio}%</div></div><div style="height:7px;background:#e5e7eb;border-radius:8px;margin:10px 0"><div style="height:100%;width:${ratio}%;background:${ratio>=80?'#16803c':ratio>=60?'#d97706':'#b42318'};border-radius:8px"></div></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:10px;margin-bottom:8px"><div>Recognised<br><b>${money('TZS',rev.TZS)}</b></div><div>Collected<br><b style="color:#16803c">${money('TZS',paid.TZS)}</b></div><div>Outstanding<br><b style="color:#b42318">${money('TZS',due.TZS)}</b></div></div><div style="font-size:9px;color:var(--muted);margin-bottom:5px">${clients} client${clients===1?'':'s'} with open selected-period balances${num(due.USD)?` · USD ${num(due.USD).toLocaleString()} also outstanding`:''}</div>${open.map(r=>`<button data-v16-kind="${r.kind}" data-v16-id="${esc(r.id)}" style="width:100%;display:grid;grid-template-columns:1fr repeat(3,minmax(74px,.55fr));gap:7px;border:0;border-top:1px solid var(--border);background:transparent;padding:7px 0;text-align:left;cursor:pointer;font-size:10px"><b>${esc(r.client)}</b><span style="text-align:right">Agreed<br><b>${money(r.currency,r.revenue)}</b></span><span style="text-align:right;color:#16803c">Paid<br><b>${money(r.currency,r.paid)}</b></span><span style="text-align:right;color:#b42318">Due<br><b>${money(r.currency,r.outstanding)}</b></span></button>`).join('')}`;
+    host.onclick=e=>{const b=e.target.closest('[data-v16-kind]');if(b&&typeof fdOpenReceivableSourceV2==='function')fdOpenReceivableSourceV2(b.dataset.v16Kind,b.dataset.v16Id)};
   }
 
   function renderAttention(){
@@ -187,45 +236,149 @@
   }
 
   function vatRecognitionDate(i){
-    const firstReceipt=receipts(i).filter(r=>num(r.cash)+num(r.wht)>0&&r.date).map(r=>r.date).sort()[0];
+    const firstReceipt=receipts(i)
+      .filter(r=>num(r.cash)+num(r.wht)>0&&r.date)
+      .map(r=>r.date)
+      .sort()[0];
     return firstReceipt||date(i.invoice_date);
   }
 
   function vatPosition(){
-    const {start,end}=bounds(),{invoices}=data(),payable={TZS:0},pipeline={TZS:0};let taxInvoiceCount=0,proformaCount=0;
-    invoices.forEach(i=>{const amount=Math.max(0,num(i.vat_amount)),type=String(i.invoice_type||'').toLowerCase(),status=String(i.status||'').toLowerCase();
-      if(type==='tax'&&!['draft','void','cancelled','superseded'].includes(status)){const recognitionDate=vatRecognitionDate(i);if(amount>0&&recognitionDate>=start&&recognitionDate<=end){add(payable,i.currency,amount);taxInvoiceCount++}}
-      else if(type==='proforma'&&status==='issued'&&amount>0&&date(i.invoice_date)>=start&&date(i.invoice_date)<=end){add(pipeline,i.currency,amount);proformaCount++}
-    });return {payable,pipeline,taxInvoiceCount,proformaCount};
+    const {start,end}=bounds(),{invoices}=data(),payable={TZS:0},pipeline={TZS:0};
+    let taxInvoiceCount=0,proformaCount=0;
+    invoices.forEach(i=>{
+      const amount=Math.max(0,num(i.vat_amount)),type=String(i.invoice_type||'').toLowerCase(),status=String(i.status||'').toLowerCase();
+      if(type==='tax'&&!['draft','void','cancelled','superseded'].includes(status)){
+        const recognitionDate=vatRecognitionDate(i);
+        if(amount>0&&recognitionDate>=start&&recognitionDate<=end){
+          add(payable,i.currency,amount);taxInvoiceCount++;
+        }
+      }else if(type==='proforma'&&status==='issued'&&amount>0&&date(i.invoice_date)>=start&&date(i.invoice_date)<=end){
+        add(pipeline,i.currency,amount);proformaCount++;
+      }
+    });
+    return {payable,pipeline,taxInvoiceCount,proformaCount};
   }
 
   function renderObligations(){
-    const host=q('fdMonthlyObligationsStableV6')||q('fdMonthlyObligations');if(!host)return;let o;try{o=fdMonthlyObligations()}catch(e){return}if(o.payrollGenerated)return;
+    const host=q('fdMonthlyObligationsStableV6')||q('fdMonthlyObligations');if(!host)return;
+    // A draft/submitted payroll is a planning figure, not a final obligation.
+    // Wrap the existing calculator once, preserving its VAT/statutory detail
+    // while allowing only an approved or locked run to be treated as generated.
+    try{
+      if(typeof fdMonthlyObligations==='function'&&!fdMonthlyObligations.__v16Authoritative){
+        const original=fdMonthlyObligations;
+        const authoritative=function(){
+          const o=original.apply(this,arguments)||{};
+          const status=String(o.run?.status||'').toLowerCase();
+          const finalised=['approved','locked'].includes(status);
+          if(o.payrollGenerated&&!finalised)return {...o,payrollGenerated:false,run:null,netSalaries:0,paye:0,nssf:0,health:0,sdl:0,wcf:0,total:0};
+          return o;
+        };
+        authoritative.__v16Authoritative=true;
+        fdMonthlyObligations=authoritative;
+      }
+    }catch(e){}
+    let o;try{o=fdMonthlyObligations()}catch(e){return}if(o.payrollGenerated)return;
     const month=new Date(o.month+'-01T00:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'}),vat=vatPosition(),vatLines=moneyLines(vat.payable,false),pipelineLines=moneyLines(vat.pipeline,false).filter(x=>x.value>0);
     const pendingRow=label=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:4px 0;font-size:12px"><span style="color:var(--muted)">${label}</span><span style="font-weight:700;color:#92400e">Pending payroll</span></div>`;
-    host.innerHTML=`<div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px;margin:0"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:2px"><div style="font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--muted)">MONTHLY OBLIGATIONS</div><span style="font-size:10px;font-weight:700;color:#92400e;background:#fef3c7;padding:2px 8px;border-radius:10px;white-space:nowrap">Payroll not generated</span></div><div style="font-size:12px;color:var(--muted);margin-bottom:10px">${esc(month)}</div><div style="font-size:18px;font-weight:900;color:var(--navy);margin-bottom:2px">${vatLines.map(x=>esc(x.text)).join(' · ')}</div><div style="font-size:11px;color:var(--muted);margin-bottom:10px">Confirmed invoice VAT · payroll obligations pending</div><div style="border-top:1px solid var(--border);padding-top:6px"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 8px;margin:0 -8px 4px;background:#f6f8fb;border-radius:8px;font-size:12px"><span style="font-weight:800;color:var(--navy)">Net Salaries</span><span style="font-weight:800;color:#92400e">Pending payroll</span></div>${['PAYE','NSSF','Health Insurance','SDL','WCF'].map(pendingRow).join('')}<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0 4px;margin-top:4px;border-top:1px solid var(--border);font-size:12px"><span style="font-weight:800;color:var(--navy)">VAT on Tax Invoices</span><span style="font-weight:900;color:#1e40af">${vatLines.map(x=>esc(x.text)).join(' · ')}</span></div><div style="font-size:9px;color:var(--muted);text-align:right">${vat.taxInvoiceCount} VAT-bearing tax invoice${vat.taxInvoiceCount===1?'':'s'} recognised in this period</div>${pipelineLines.length?`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0 3px;margin-top:5px;border-top:1px dashed var(--border);font-size:11px"><span style="color:var(--muted)">Proforma VAT — not yet payable</span><span style="font-weight:700;color:#64748b">${pipelineLines.map(x=>esc(x.text)).join(' · ')}</span></div><div style="font-size:9px;color:var(--muted)">Moves to invoice VAT automatically when payment converts the proforma to a tax invoice.</div>`:''}</div></div>`;
+    host.innerHTML=`<div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px;margin:0">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:2px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--muted)">MONTHLY OBLIGATIONS</div>
+        <span style="font-size:10px;font-weight:700;color:#92400e;background:#fef3c7;padding:2px 8px;border-radius:10px;white-space:nowrap">Payroll not generated</span>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${esc(month)}</div>
+      <div style="font-size:18px;font-weight:900;color:var(--navy);margin-bottom:2px">${vatLines.map(x=>esc(x.text)).join(' · ')}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Confirmed invoice VAT · payroll obligations pending</div>
+      <div style="border-top:1px solid var(--border);padding-top:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 8px;margin:0 -8px 4px;background:#f6f8fb;border-radius:8px;font-size:12px"><span style="font-weight:800;color:var(--navy)">Net Salaries</span><span style="font-weight:800;color:#92400e">Pending payroll</span></div>
+        ${['PAYE','NSSF','Health Insurance','SDL','WCF'].map(pendingRow).join('')}
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0 4px;margin-top:4px;border-top:1px solid var(--border);font-size:12px"><span style="font-weight:800;color:var(--navy)">VAT on Tax Invoices</span><span style="font-weight:900;color:#1e40af">${vatLines.map(x=>esc(x.text)).join(' · ')}</span></div>
+        <div style="font-size:9px;color:var(--muted);text-align:right">${vat.taxInvoiceCount} VAT-bearing tax invoice${vat.taxInvoiceCount===1?'':'s'} recognised in this period</div>
+        ${pipelineLines.length?`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0 3px;margin-top:5px;border-top:1px dashed var(--border);font-size:11px"><span style="color:var(--muted)">Proforma VAT — not yet payable</span><span style="font-weight:700;color:#64748b">${pipelineLines.map(x=>esc(x.text)).join(' · ')}</span></div><div style="font-size:9px;color:var(--muted)">Moves to invoice VAT automatically when payment converts the proforma to a tax invoice.</div>`:''}
+      </div>
+    </div>`;
   }
 
   function renderStatus(){
     const m=metrics(),ratio=num(m.revenue.TZS)?num(m.collected.TZS)/num(m.revenue.TZS):0,cash=num(m.cash.closingByCur?.TZS),payrollPending=!(()=>{try{return fdMonthlyObligations().payrollGenerated}catch(e){return false}})();
     let level='Healthy',color='#16a34a';if(cash<0){level='Critical';color='#dc2626'}else if(ratio<.8||payrollPending){level='Stable';color='#b45309'}
+    const issues=reconciliationIssues();
+    if(issues.length||paymentLedgerLoadError){level='Needs Reconciliation';color='#b45309'}
     const text=q('fdStatusText');if(text)text.textContent=`Financial Status: ${level} · ${typeof fdPeriodLabel==='function'?fdPeriodLabel():'Selected period'}`;
+    let warning=q('fdPaymentReconciliationWarning');
+    if(!warning&&typeof document.createElement==='function'){
+      warning=document.createElement('div');warning.id='fdPaymentReconciliationWarning';
+      const anchor=q('fdStatusIndicator')?.parentElement||q('fdKpiRow')?.parentElement;
+      if(anchor)anchor.insertBefore(warning,anchor.firstChild);
+    }
+    if(warning)warning.innerHTML=(issues.length||paymentLedgerLoadError)?`<div style="padding:10px 12px;margin:8px 0;border:1px solid #f59e0b;border-radius:8px;background:#fffbeb;color:#92400e;font-size:12px"><b>Payment reconciliation required:</b> ${paymentLedgerLoadError?'The Invoice Module payment ledger could not be loaded. ':''}${issues.length?`${issues.length} invoice(s) have missing, inconsistent or estimated payment-ledger records. Their payment dates are excluded from period cash totals until verified.`:''}<div style="margin-top:5px;font-weight:700">${issues.slice(0,5).map(x=>esc(x.invoice.invoice_number||x.invoice.id)).join(', ')}${issues.length>5?' and '+(issues.length-5)+' more':''}</div></div>`:'';
     const box=q('fdStatusIndicator');if(box){box.style.color=color;box.style.background=level==='Healthy'?'#f0fdf4':level==='Critical'?'#fef2f2':'#fffbeb'}
     const intel=q('fdIntelligence');if(intel)intel.innerHTML=`<b>${level}:</b> ${Math.round(ratio*100)}% of TZS recognised revenue collected. Cash available is <b>${money('TZS',cash)}</b>.${payrollPending?' September payroll obligations are pending calculation.':''}`;
   }
 
-  function render(){if(rendering)return;rendering=true;try{renderKpis();renderReceivables();renderRevenueAnalytics();renderCollectionHealth();renderAttention();renderObligations();renderStatus()}finally{rendering=false}}
+  function render(){
+    if(rendering)return;rendering=true;
+    try{renderKpis();renderReceivables();renderRevenueAnalytics();renderCollectionHealth();renderAttention();renderObligations();renderStatus()}finally{rendering=false}
+  }
+
+  function installLedgerReceiptAdapter(){
+    if(typeof window.fdInvoiceCashReceipts==='function'&&!window.fdInvoiceCashReceipts.__molmsLedgerOnly){
+      const ledgerOnly=function(inv){
+        return receipts(inv).filter(r=>!r.estimated&&r.date).map(r=>({
+          date:r.date,amount:r.cash,currency:inv.currency||'TZS',invoice:inv,
+          withholding_tax_amount:r.wht
+        }));
+      };
+      ledgerOnly.__molmsLedgerOnly=true;
+      window.fdInvoiceCashReceipts=ledgerOnly;
+    }
+  }
 
   async function loadPayments(){
-    try{if(typeof sb==='undefined'||!sb)return;const {data:rows,error}=await sb.from('invoice_payments').select('id,invoice_id,payment_date,cash_amount,withholding_tax_amount,reference,created_at');if(error)throw error;paymentRows=rows||[]}catch(e){console.warn('[MOLMS finance V16 payments]',e)}
+    try{
+      if(typeof sb==='undefined'||!sb)throw new Error('Invoice payment ledger connection unavailable');
+      const {data:rows,error}=await sb.from('invoice_payments').select('id,invoice_id,payment_date,cash_amount,withholding_tax_amount,reference,created_at,entry_origin,payment_date_is_estimated');
+      if(error)throw error;
+      paymentRows=rows||[];
+      paymentLedgerLoadError=false;
+      installLedgerReceiptAdapter();
+    }catch(e){
+      console.warn('[MOLMS finance V16 payments]',e);
+      paymentRows=[];
+      paymentLedgerLoadError=true;
+      installLedgerReceiptAdapter();
+    }
   }
+
   async function refresh(){await loadPayments();render();setTimeout(render,30);setTimeout(render,180)}
   const baseRefresh=window.fdRefresh;
   if(typeof baseRefresh==='function')window.fdRefresh=async function(){const result=await baseRefresh.apply(this,arguments);await refresh();return result};
   window.addEventListener('load',()=>{setTimeout(refresh,900);setTimeout(refresh,1800)});
+  // The legacy application renders again after authentication and after its
+  // asynchronous financial queries complete. Reconcile after those paints so
+  // the canonical figures cannot be replaced by the old dashboard output.
   let lastDataSignature='';
-  setInterval(()=>{const kpi=q('fdKpiRow'),client=q('fdClientMatterRevenueV2');if(!kpi&&!client)return;const d=data();const signature=[d.invoices.length,d.manual.length,d.entries.length,d.payroll.length,d.office.length,bounds().start,bounds().end].join('|');const legacyVisible=(kpi&&/OUTSTANDING PAYMENTS/.test(kpi.textContent||''))||(client&&/CLIENT\s*&\s*MATTER REVENUE/.test(client.textContent||''));if(legacyVisible)render();if(signature!==lastDataSignature){lastDataSignature=signature;refresh()}},500);
+  setInterval(()=>{
+    const kpi=q('fdKpiRow'),client=q('fdClientMatterRevenueV2');
+    if(!kpi&&!client)return;
+    const d=data();
+    const signature=[d.invoices.length,d.manual.length,d.entries.length,d.payroll.length,d.office.length,bounds().start,bounds().end].join('|');
+    const legacyVisible=(kpi&&/OUTSTANDING PAYMENTS/.test(kpi.textContent||''))||(client&&/CLIENT\s*&\s*MATTER REVENUE/.test(client.textContent||''));
+    if(legacyVisible)render();
+    if(signature!==lastDataSignature){lastDataSignature=signature;refresh()}
+  },500);
   let reconcileQueued=false;
-  if(typeof MutationObserver!=='undefined')new MutationObserver(()=>{const kpi=q('fdKpiRow'),client=q('fdClientMatterRevenueV2');const legacyVisible=(kpi&&/OUTSTANDING PAYMENTS/.test(kpi.textContent||''))||(client&&/CLIENT\s*&\s*MATTER REVENUE/.test(client.textContent||''));if(!legacyVisible||reconcileQueued)return;reconcileQueued=true;queueMicrotask(()=>{reconcileQueued=false;render()})}).observe(document.documentElement,{childList:true,subtree:true});
-  window.MOLMSFinanceV16={metrics,periodClientRows,allReceivables,invoiceRegisterRows,render,refresh,audit:()=>{const m=metrics();return {version:16,period:bounds(),revenue:m.revenue,collected:m.collected,newReceivables:m.newReceivables,totalReceivables:m.totalReceivables,cash:m.cash.closingByCur,vat:vatPosition(),paymentLedgerRows:paymentRows.length,invoiceRows:invoiceRegisterRows().length}}};
+  if(typeof MutationObserver!=='undefined')new MutationObserver(()=>{
+      const kpi=q('fdKpiRow'),client=q('fdClientMatterRevenueV2');
+      const legacyVisible=(kpi&&/OUTSTANDING PAYMENTS/.test(kpi.textContent||''))||(client&&/CLIENT\s*&\s*MATTER REVENUE/.test(client.textContent||''));
+      if(!legacyVisible||reconcileQueued)return;
+      reconcileQueued=true;
+      queueMicrotask(()=>{reconcileQueued=false;render()});
+    }).observe(document.documentElement,{childList:true,subtree:true});
+  window.MOLMSFinanceV16={metrics,periodClientRows,allReceivables,render,refresh,
+    setPaymentRowsForTest(rows){paymentRows=Array.isArray(rows)?rows:[];paymentLedgerLoadError=false},
+    paymentIntegrity,
+    audit:()=>{const m=metrics();return {version:17,period:bounds(),revenue:m.revenue,collected:m.collected,withholdingTax:periodWithholdingTax(),reconciliationIssues:reconciliationIssues().length,newReceivables:m.newReceivables,totalReceivables:m.totalReceivables,cash:m.cash.closingByCur,expenses:m.expenses,vat:vatPosition(),paymentLedgerRows:paymentRows.length}}
+  };
 })();
