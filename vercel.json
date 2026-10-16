@@ -1,8 +1,10 @@
 {
-  "outputDirectory": ".",
+  "version": 2,
+  "builds": [
+    { "src": "package.json", "use": "@vercel/static-build" },
+    { "src": "api/**/*.ts", "use": "@vercel/node" }
+  ],
   "routes": [
-    {"src": "/", "dest": "/index.html"},
-    {"handle": "filesystem"},
-    {"src": "/.*", "dest": "/index.html"}
+    { "src": "/api/(.*)", "dest": "/api/$1" }
   ]
 }

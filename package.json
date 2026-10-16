@@ -3,7 +3,8 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "build": "mkdir -p www"
+    "build": "mkdir -p www",
+    "test": "jest"
   },
   "dependencies": {
     "@capacitor/android": "7.4.4",
@@ -12,6 +13,11 @@
     "@capacitor/ios": "7.4.4"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20.19.43",
+    "@vercel/node": "^24.0.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.4.15",
     "typescript": "^5.9.2"
   }
 }
