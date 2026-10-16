@@ -1,6 +1,9 @@
 import express from "express";
 import bodyParser from "body-parser";
 import { validateHmacSignature } from "./signatureValidator";
+import { normalizeWhatsAppPayload } from "./normalizer";
+
+export { normalizeWhatsAppPayload };
 import { DurableStore, InMemoryStore } from "../../store/durableStore";
 import { ApprovalQueue } from "../../services/approvalQueue";
 import { InMemoryAuditPersister, AuditLog } from "../../services/auditLog";
@@ -117,16 +120,4 @@ export function createWhatsAppRouter(options?: { secret?: string; store?: Durabl
   });
 
   return router;
-}
-
-function normalizeWhatsAppPayload(body: any) {
-  // Minimal normalizer — adapt to your provider payload schema
-  if (!body) return null;
-  // Expecting fields: id, from, text, tenantId, matterId (optional)
-  const id = body?.id || body?.entry?.[0]?.id || body?.message?.id;
-  const from = body?.from || body?.sender || body?.message?.from;
-  const text = body?.text || body?.message?.text?.body || JSON.stringify(body);
-  const tenantId = body?.tenantId || undefined;
-  const matterId = body?.matterId || undefined;
-  return { id, from, text, tenantId, matterId, raw: body };
 }

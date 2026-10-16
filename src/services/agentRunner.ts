@@ -38,14 +38,15 @@ export class AgentRunner {
     });
 
     // Run with timeout
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const p = agent.run(ctx, { timeoutMs });
       const res = await Promise.race([
         p,
-        new Promise<AgentResult>((_, reject) =>
-          setTimeout(() => reject(new Error("agent timeout")), timeoutMs)
-        ),
-      ]);
+        new Promise<AgentResult>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("agent timeout")), timeoutMs);
+        }),
+      ]).finally(() => clearTimeout(timer));
       await this.auditLog.record({
         ...auditBase,
         status: res.ok ? "completed" : "failed",
